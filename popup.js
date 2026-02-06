@@ -14,6 +14,13 @@ const frequencySlider = document.getElementById('frequency-slider');
 const frequencyValue = document.getElementById('frequency-value');
 const wordsLearned = document.getElementById('words-learned');
 const pagesVisited = document.getElementById('pages-visited');
+const favoritesList = document.getElementById('favorites-list');
+
+// View elements
+const mainView = document.getElementById('main-view');
+const favoritesView = document.getElementById('favorites-view');
+const showFavoritesBtn = document.getElementById('show-favorites-btn');
+const backBtn = document.getElementById('back-btn');
 
 // Load saved settings
 async function loadSettings() {
@@ -31,10 +38,10 @@ async function loadSettings() {
   if (result.lastDate !== today) {
     result.wordsToday = 0;
     result.pagesCount = 0;
-    await chrome.storage.sync.set({ 
-      wordsToday: 0, 
-      pagesCount: 0, 
-      lastDate: today 
+    await chrome.storage.sync.set({
+      wordsToday: 0,
+      pagesCount: 0,
+      lastDate: today
     });
   }
 
@@ -50,19 +57,22 @@ async function loadSettings() {
     btn.classList.toggle('active', btn.dataset.level === result.level);
   });
   levelDescription.textContent = levelDescriptions[result.level];
+
+  // Load favorites
+  await loadFavorites();
 }
 
 // Save settings
 async function saveSettings(settings) {
   await chrome.storage.sync.set(settings);
-  
+
   // Notify content scripts of settings change
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tabs[0]) {
     try {
-      await chrome.tabs.sendMessage(tabs[0].id, { 
-        type: 'SETTINGS_UPDATED', 
-        settings 
+      await chrome.tabs.sendMessage(tabs[0].id, {
+        type: 'SETTINGS_UPDATED',
+        settings
       });
     } catch (e) {
       // Content script might not be loaded yet
@@ -92,6 +102,7 @@ frequencySlider.addEventListener('input', () => {
 
 // Initialize
 loadSettings();
+showMainView(); // Start on main view
 
 // Listen for stats updates
 chrome.storage.onChanged.addListener((changes, namespace) => {
@@ -102,5 +113,66 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     if (changes.pagesCount) {
       pagesVisited.textContent = changes.pagesCount.newValue;
     }
+    if (changes.favorites) {
+      loadFavorites();
+    }
   }
 });
+
+// Load and render favorites
+async function loadFavorites() {
+  const result = await chrome.storage.sync.get({ favorites: [] });
+  const favorites = result.favorites || [];
+
+  renderFavorites(favorites);
+}
+
+// Render favorites list
+function renderFavorites(favorites) {
+  if (!favorites || favorites.length === 0) {
+    favoritesList.innerHTML = '<p class="empty-state">No favorites yet. Star words from tooltips!</p>';
+    return;
+  }
+
+  favoritesList.innerHTML = favorites.map(word => `
+    <div class="favorite-item">
+      <div>
+        <div class="favorite-word">${word}</div>
+      </div>
+      <button class="remove-favorite" data-word="${word}" title="Remove favorite">×</button>
+    </div>
+  `).join('');
+
+  // Add event listeners to remove buttons
+  favoritesList.querySelectorAll('.remove-favorite').forEach(btn => {
+    btn.addEventListener('click', () => {
+      removeFavorite(btn.dataset.word);
+    });
+  });
+}
+
+// Remove a favorite
+async function removeFavorite(word) {
+  const result = await chrome.storage.sync.get({ favorites: [] });
+  const favorites = result.favorites || [];
+  const updated = favorites.filter(w => w !== word);
+
+  await chrome.storage.sync.set({ favorites: updated });
+  renderFavorites(updated);
+}
+
+// View switching
+function showMainView() {
+  mainView.style.display = 'block';
+  favoritesView.style.display = 'none';
+}
+
+function showFavoritesView() {
+  mainView.style.display = 'none';
+  favoritesView.style.display = 'block';
+  loadFavorites(); // Refresh favorites when showing
+}
+
+// Navigation handlers
+showFavoritesBtn.addEventListener('click', showFavoritesView);
+backBtn.addEventListener('click', showMainView);

@@ -22,6 +22,10 @@
     };
     let wordMap = null;
     let hasProcessed = false;
+    let seenWords = new Set();
+    let favorites = new Set();
+
+
 
     /**
      * Initialize the extension
@@ -32,9 +36,18 @@
             const result = await chrome.storage.sync.get({
                 enabled: true,
                 level: 'B1',
-                frequency: 15
+                frequency: 15,
+                seenWordsList: [], // Load persisted seen words
+                favorites: []
             });
             settings = result;
+            if (result.seenWordsList) {
+                seenWords = new Set(result.seenWordsList);
+            }
+            if (result.favorites) {
+                favorites = new Set(result.favorites);
+            }
+
         } catch (e) {
             console.log('German Sprinkle: Could not load settings, using defaults');
         }
@@ -103,9 +116,19 @@
     /**
      * Process the page and replace words
      */
+    /**
+     * Process the page and replace words
+     */
     function processPage() {
         if (hasProcessed || !settings.enabled || !wordMap) return;
         hasProcessed = true;
+
+        // Use compromise to parse the entire body text for context
+        // This is much better than scanning individual text nodes which lose context
+        // However, to keep DOM replacement simple, we still map back to text nodes?
+        // Actually, compromise runs on string.
+        // Let's stick to node walking but use compromise on the sentence level if possible.
+        // FOR NOW: Let's run compromise on the text content of each block element.
 
         // Find all text nodes
         const textNodes = [];
@@ -114,6 +137,9 @@
         // Find replaceable words in all text nodes
         const candidates = [];
         for (const node of textNodes) {
+            // Only process if node has meaningful text
+            if (node.textContent.trim().length < 3) continue;
+
             const words = findReplaceableWords(node);
             candidates.push(...words);
         }
@@ -132,12 +158,17 @@
             return b.start - a.start;
         });
 
+        const actuallyReplacedWords = [];
         for (const candidate of toReplace) {
             replaceWord(candidate);
+            actuallyReplacedWords.push(candidate.word.toLowerCase());
         }
 
-        // Update stats
-        updateStats(toReplace.length);
+        // Deduplicate: only count each unique word once per page
+        const uniqueWords = [...new Set(actuallyReplacedWords)];
+
+        // Update stats with unique words
+        updateStats(uniqueWords);
     }
 
     /**
@@ -171,41 +202,92 @@
     /**
      * Find words in a text node that can be replaced
      */
+    /**
+     * Find words in a text node that can be replaced
+     * Uses Compromise.js for Part-of-Speech tagging
+     */
     function findReplaceableWords(node) {
-        const { isWordBoundary } = window.GermanSprinkleUtils;
         const text = node.textContent;
         const candidates = [];
 
-        // Word boundary regex to find words
-        const wordRegex = /[a-zA-Z]+/g;
-        let match;
+        // Run NLP on the text content
+        // This is a lightweight call
+        let doc;
+        try {
+            if (typeof window.nlp === 'function') {
+                doc = window.nlp(text);
+            } else {
+                // Fallback if nlp didn't load
+                return [];
+            }
+        } catch (e) {
+            return [];
+        }
 
-        while ((match = wordRegex.exec(text)) !== null) {
-            const word = match[0];
+        // Internal lists from compromise
+        const terms = doc.termList();
+
+        for (const term of terms) {
+            const word = term.text;
             const lowerWord = word.toLowerCase();
+            const cleanWord = term.clean || lowerWord; // Removed punctuation
 
-            // Check if word exists in our vocabulary
-            if (wordMap.has(lowerWord)) {
-                const start = match.index;
-                const end = start + word.length;
+            if (wordMap.has(lowerWord) || wordMap.has(cleanWord)) {
+                const entry = wordMap.get(lowerWord) || wordMap.get(cleanWord);
 
-                // Verify word boundaries
-                const charBefore = text[start - 1];
-                const charAfter = text[end];
+                // --- CONTEXT CHECK ---
+                // If the dictionary entry has a part of speech, verify it matches
+                let matchesContext = true;
 
-                if (isWordBoundary(charBefore) && isWordBoundary(charAfter)) {
-                    candidates.push({
-                        node,
-                        word,
-                        start,
-                        end,
-                        entry: wordMap.get(lowerWord)
-                    });
+                if (entry.partOfSpeech) {
+                    if (entry.partOfSpeech === 'noun' && !term.tags['Noun']) matchesContext = false;
+                    if (entry.partOfSpeech === 'verb' && !term.tags['Verb']) matchesContext = false;
+                    if (entry.partOfSpeech === 'adjective' && !term.tags['Adjective']) matchesContext = false;
+                    if (entry.partOfSpeech === 'adverb' && !term.tags['Adverb']) matchesContext = false;
+
+                    // Special check: Don't replace proper nouns unless we are sure
+                    // (prevents translating names like "Brown" or "Baker")
+                    if (term.tags['ProperNoun'] && entry.partOfSpeech !== 'properNoun') {
+                        matchesContext = false;
+                    }
+                }
+
+                if (matchesContext) {
+                    // Need to find exact position in the raw text
+                    // Compromise doesn't give exact offsets relative to the original node text easily in all versions,
+                    // but we can search for it near the expected area or use a simple regex fallback for location
+                    // For simplicity/reliability in this hybrid approach:
+                    // We know the word exists. We'll find it adjacent to others.
+
+                    // Fallback to simple regex for location but confirmed by NLP
+                    const index = text.indexOf(word); // Crude, assumes first instance. 
+                    // Better: use term.offset if available or calculate.
+
+                    // REFACTOR: The 'term' object from termList() usually has index info 
+                    // relative to the start of the doc. 
+                    // In version 14+, logic might vary. 
+                    // Let's stick to a robust find for now:
+
+                    const safeRegex = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'g');
+                    let match;
+                    while ((match = safeRegex.exec(text)) !== null) {
+                        candidates.push({
+                            node,
+                            word: match[0],
+                            start: match.index,
+                            end: match.index + match[0].length,
+                            entry
+                        });
+                    }
                 }
             }
         }
 
         return candidates;
+    }
+
+    function escapeRegExp(string) {
+        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     /**
@@ -234,9 +316,16 @@
 
         // Add hover handlers
         span.addEventListener('mouseenter', () => {
-            showTooltip(span, word, entry.article);
+            // check if favorite (using german word as key for simplicity)
+            const isFav = favorites.has(germanWord);
+            showTooltip(span, germanWord, word, entry, isFav, handleFavoriteToggle);
         });
-        span.addEventListener('mouseleave', hideTooltip);
+        span.addEventListener('mouseleave', (e) => {
+            // Only hide if we aren't moving into the tooltip
+            // The utils.hideTooltip has a delay check built-in now
+            hideTooltip();
+        });
+
 
         // Replace the text node with: before text + span + after text
         const parent = node.parentNode;
@@ -251,30 +340,77 @@
     }
 
     /**
+     * Handle toggling a word as favorite
+     */
+    async function handleFavoriteToggle(germanWord, entry, isFavorite) {
+        if (isFavorite) {
+            favorites.add(germanWord);
+        } else {
+            favorites.delete(germanWord);
+        }
+
+        // Persist
+        try {
+            await chrome.storage.sync.set({
+                favorites: Array.from(favorites)
+            });
+        } catch (e) {
+            console.error("Failed to save favorite", e);
+        }
+    }
+
+    /**
      * Update extension stats
      */
-    async function updateStats(replacedCount) {
+    /**
+     * Update extension stats - Only count NEW words
+     */
+    async function updateStats(replacedWordsList) {
         try {
             const result = await chrome.storage.sync.get({
                 wordsToday: 0,
                 pagesCount: 0,
-                lastDate: new Date().toDateString()
+                lastDate: new Date().toDateString(),
+                seenWordsList: []
             });
 
             const today = new Date().toDateString();
             let { wordsToday, pagesCount, lastDate } = result;
+            let currentSeenList = new Set(result.seenWordsList || []);
 
             // Reset if new day
             if (lastDate !== today) {
                 wordsToday = 0;
                 pagesCount = 0;
+                // Optional: Reset seen words daily? User said "count new words", maybe per day or lifetime.
+                // Usually "new words" implies lifetime or resetting daily. 
+                // Let's assume daily "new words encountered" for the stats counter.
+                currentSeenList = new Set();
             }
 
-            await chrome.storage.sync.set({
-                wordsToday: wordsToday + replacedCount,
-                pagesCount: pagesCount + 1,
-                lastDate: today
-            });
+            let newWordsCount = 0;
+            for (const w of replacedWordsList) {
+                if (!currentSeenList.has(w)) {
+                    currentSeenList.add(w);
+                    newWordsCount++;
+                }
+            }
+
+            // Only update if we found new words or visited a new page
+            if (newWordsCount > 0 || lastDate !== today) {
+                await chrome.storage.sync.set({
+                    wordsToday: wordsToday + newWordsCount,
+                    pagesCount: pagesCount + 1,
+                    lastDate: today,
+                    seenWordsList: Array.from(currentSeenList)
+                });
+            } else {
+                // Just update page count
+                await chrome.storage.sync.set({
+                    pagesCount: pagesCount + 1,
+                    lastDate: today
+                });
+            }
         } catch (e) {
             // Stats update failed, non-critical
         }
