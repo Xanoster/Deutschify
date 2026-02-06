@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>German Word Sprinkle</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">🇩🇪</span>
+        <h1>German Sprinkle</h1>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="enabled-toggle" checked>
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <section class="level-section">
+      <h2>Your Level</h2>
+      <div class="level-buttons">
+        <button class="level-btn" data-level="A1">A1</button>
+        <button class="level-btn" data-level="A2">A2</button>
+        <button class="level-btn active" data-level="B1">B1</button>
+        <button class="level-btn" data-level="B2">B2</button>
+      </div>
+      <p class="level-description" id="level-description">Intermediate - Everyday topics</p>
+    </section>
+
+    <section class="frequency-section">
+      <h2>Translation Density</h2>
+      <div class="slider-container">
+        <input type="range" id="frequency-slider" min="1" max="100" value="15">
+        <span class="frequency-value" id="frequency-value">15%</span>
+      </div>
+    </section>
+
+    <section class="stats-section">
+      <div class="stat">
+        <span class="stat-value" id="words-learned">0</span>
+        <span class="stat-label">Words seen today</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="pages-visited">0</span>
+        <span class="stat-label">Pages visited</span>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>Hover over <span class="demo-word">Wörter</span> to see English</p>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
